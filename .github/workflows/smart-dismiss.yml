@@ -1,0 +1,56 @@
+name: Smart Dismiss PR Reviews
+
+on:
+  pull_request:
+    types: [synchronize]
+
+jobs:
+  smart-dismiss:
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.event.pull_request.base.ref }}
+
+      - name: Get changed files
+        id: diff
+        run: |
+          git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD > changed.txt
+          cat changed.txt
+          echo "changed_files=$(cat changed.txt | tr '\n' ' ')" >> $GITHUB_OUTPUT
+
+      - name: Check if only trivial changes
+        id: check
+        run: |
+          CHANGED=$(cat changed.txt | grep -vE '\.(md|json|lock|yml|yaml)$' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "only_trivial=true" >> $GITHUB_OUTPUT
+          else
+            echo "only_trivial=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Dismiss reviews if logic changed
+        if: steps.check.outputs.only_trivial == 'false'
+        run: |
+          echo "Logic changed — dismissing reviews..."
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          TOKEN=${{ secrets.GITHUB_TOKEN }}
+
+          REVIEWS=$(curl -s -H "Authorization: token $TOKEN" \
+            https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews | jq -r '.[].id')
+
+          for REVIEW_ID in $REVIEWS; do
+            curl -s -X PUT \
+              -H "Authorization: token $TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID/dismissals \
+              -d '{"message": "Code changed after review, please review again."}'
+          done
